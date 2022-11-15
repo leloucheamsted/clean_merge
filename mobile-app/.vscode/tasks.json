@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "tello build",
+            "type": "shell",
+            "command": "/Users/fersmart/Projects_all/ProjectsMiaGaming/Tello/tellob2c/tello_user_build_release.sh"
+        },
+        {
+            "label": "launchIosSimulator 14 Pro Max",
+            "type": "shell",
+            "command": "open -a Simulator --args -CurrentDeviceUDID '5A4EC339-9687-4B9B-9318-EBF0A6DE8A49' && xcrun simctl boot 5A4EC339-9687-4B9B-9318-EBF0A6DE8A49",
+            // "command": "open -a Simulator --args -CurrentDeviceUDID '163FE63A-681C-4DBB-A90C-BBB4F9C1E18C' && xcrun simctl boot 163FE63A-681C-4DBB-A90C-BBB4F9C1E18C",
+            "problemMatcher": []
+        },
+        {
+            "label": "launchIosSimulator iPhone SE (3rd generation)",
+            "type": "shell",
+            "command": "open -a Simulator --args -CurrentDeviceUDID 'CAFA6DE6-DC8B-428C-9992-CEFB4328E31C' && xcrun simctl boot CAFA6DE6-DC8B-428C-9992-CEFB4328E31C",
+            // "command": "open -a Simulator --args -CurrentDeviceUDID '163FE63A-681C-4DBB-A90C-BBB4F9C1E18C' && xcrun simctl boot 163FE63A-681C-4DBB-A90C-BBB4F9C1E18C",
+            "problemMatcher": []
+        },
+        {
+            "label": "launchIosSimulator 5S",
+            "type": "shell",
+            "command": "open -a Simulator --args -CurrentDeviceUDID '091D537E-9945-45FB-8B34-DA4815318662' && xcrun simctl boot 091D537E-9945-45FB-8B34-DA4815318662"
+        }
+    ]
+}

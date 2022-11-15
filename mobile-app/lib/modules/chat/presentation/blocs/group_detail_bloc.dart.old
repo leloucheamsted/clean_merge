@@ -1,0 +1,91 @@
+import 'dart:developer';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_modular/flutter_modular.dart';
+import 'package:tello_social_app/modules/chat/domain/entities/group.entity.dart';
+import 'package:tello_social_app/modules/contact/domain/entities/contact.entity.dart';
+import 'package:tello_social_app/modules/core/presentation/action_state.dart';
+import 'package:tello_social_app/modules/core/presentation/either_stream_binder.dart';
+import 'package:tello_social_app/modules/core/services/dialog_service.dart';
+import 'package:tello_social_app/routes/app_routes.enum.dart';
+
+import '../../domain/usecases/group_add_member.usecase.dart';
+import '../../domain/usecases/group_fetchlist.usecase.dart';
+import '../../domain/usecases/group_find_by_id.usecase.dart';
+import '../../domain/usecases/group_remove_member.usecase.dart';
+import '../../domain/usecases/input_group_member_usecase.dart';
+
+class GrooupDetailBloc {
+  late final _fetchGroupStreamBinder = EitherStreamBinder<GroupEntity>();
+
+  late final GroupFindByIdUseCase _fetchGroupUseCase = Modular.get();
+
+  late final _addMemberStreamBinder = EitherStreamBinder();
+
+  GrooupDetailBloc();
+  String? _groupId;
+  void setGroupId(String id) {
+    _groupId = id;
+  }
+
+  Stream<ActionState<GroupEntity>> get outStream => _fetchGroupStreamBinder.outStream;
+  Stream<ActionState> get outStreamAddMember => _addMemberStreamBinder.outStream;
+
+  void loadData() {
+    _fetchGroupStreamBinder.callUseCase(() => _fetchGroupUseCase.call(_groupId!), flagLoading: true);
+  }
+
+  void actionSelectContact() async {
+    final response = await Modular.to.pushNamed<ContactEntity>(AppRoute.contacts.path);
+    if (response == null) {
+      return;
+    }
+    log("onContactSelect $response");
+
+    final GroupAddMemberUseCase groupAddUserUseCase = Modular.get();
+    _setBusy(true);
+    _addMemberStreamBinder.callUseCase(
+        () => groupAddUserUseCase.call(InputGroupMemberUsecase(groupId: _groupId!, phoneNumber: response.phoneNumber)),
+        // onCompleted: (_) => _setBusy(false),
+        onFailure: (error) => DialogService.simpleAlert(title: "Fail", body: error),
+        onSuccess: (data) {
+          loadData();
+          DialogService.simpleAlert(title: "Done", body: data.toString());
+        });
+  }
+
+  void actionRemoveMember(String phoneNumber) async {
+    _setBusy(true);
+    try {
+      final GroupRemoveMemberUseCase groupRemoveMemberUseCase = Modular.get();
+      final result =
+          await groupRemoveMemberUseCase.call(InputGroupMemberUsecase(groupId: _groupId!, phoneNumber: phoneNumber));
+      _setBusy(false);
+      result.fold((l) => _showAlert(l.toString()), (r) {
+        loadData();
+        DialogService.showToast(msg: "User removed $phoneNumber");
+      });
+    } catch (e) {
+      _setBusy(false);
+      _showAlert(e.toString());
+    }
+  }
+
+  void _setBusy(bool st) {
+    if (st) {
+      DialogService.showLoading();
+    } else {
+      DialogService.closeLoading();
+      // Modular.to.pop();
+    }
+  }
+
+  void _showAlert(String msg) {
+    DialogService.simpleAlert(title: "Alert", body: msg);
+  }
+
+  void dispose() {
+    _fetchGroupStreamBinder.dispose();
+    _addMemberStreamBinder.dispose();
+  }
+}

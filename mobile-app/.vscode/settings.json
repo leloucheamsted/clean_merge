@@ -1,0 +1,13 @@
+{
+  "files.exclude": {
+    "lib/generated_plugin_registrant.dart": true,
+    "build": true,
+    "web": true,
+    "windows": true,
+    ".flutter-plugins": true,
+    ".flutter-plugins-dependencies": true,
+    "pubspec.lock": true,
+    ".packages": true,
+    ".metadata": true
+  }
+}

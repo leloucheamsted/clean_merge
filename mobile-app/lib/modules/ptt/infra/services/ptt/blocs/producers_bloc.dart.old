@@ -1,0 +1,35 @@
+import 'package:flutter_mediasoup/mediasoup_client/producer.dart';
+import 'package:rxdart/rxdart.dart';
+
+typedef ProducersMap = Map<String, Producer>;
+
+class ProducersBloc {
+  final ProducersMap peerMap = {};
+  late final _ctrl = BehaviorSubject<ProducersMap>.seeded(peerMap);
+  Stream<ProducersMap> get outStream => _ctrl.stream;
+
+  void refresh() {
+    _ctrl.add(peerMap);
+  }
+
+  void remove(Producer vo) {
+    // peerMap.removeWhere((key, value) => value.id == vo.id);
+    peerMap.remove(vo.id);
+    refresh();
+  }
+
+  void add(Producer vo) {
+    peerMap[vo.id!] = vo;
+    refresh();
+  }
+
+  void removeAll() {
+    peerMap.clear();
+    refresh();
+  }
+
+  void dipose() {
+    peerMap.clear();
+    _ctrl.close();
+  }
+}

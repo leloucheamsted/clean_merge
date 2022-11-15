@@ -1,0 +1,283 @@
+import 'package:flutter_mediasoup/flutter_mediasoup.dart';
+import 'package:flutter_webrtc/rtc_rtp_receiver.dart';
+import 'package:eventify/eventify.dart' as evf;
+import 'package:flutter_webrtc/webrtc.dart';
+
+// import 'package:flutter_webrtc/flutter_webrtc.dart';
+// import 'package:mediasoup_client_flutter/mediasoup_client_flutter.dart';
+
+import '../interfaces/i_socket.dart';
+
+class MediaSoupSvc {
+  final ISocket socket;
+
+  Device? _mediasoupDevice;
+  Transport? _receiveTransport;
+  Transport? _sendTransport;
+
+  Device get mediasoupDevice => _mediasoupDevice ?? (_mediasoupDevice = Device());
+
+  final List<evf.Listener> _sendTransportListeners = [];
+  final List<evf.Listener> _receiveTransportListeners = [];
+
+  bool _isDisposed = false;
+
+  final Function(Producer, String) onProducerCallBack;
+
+  String? _peerId;
+
+  void setPeerId(String id) {
+    _peerId = id;
+  }
+
+  MediaSoupSvc({
+    required this.socket,
+    required this.onProducerCallBack,
+  });
+
+  void _clearTransportListeners(List<evf.Listener> list) {
+    for (final listener in list) {
+      listener.cancel();
+    }
+    list.clear();
+  }
+
+  void _clearSendTransportListeners() => _clearTransportListeners(_sendTransportListeners);
+  void _clearReceiveTransportListeners() => _clearTransportListeners(_receiveTransportListeners);
+
+  void createDevice() {
+    _mediasoupDevice = Device();
+  }
+
+  dynamic getDeviceRtpCapabilities() {
+    return _mediasoupDevice!.rtpCapabilities;
+  }
+
+  Future getAndLoadRouterCapabilities() async {
+    final Map<String, dynamic> routerRtpCapabilities = await socket.request('getRouterRtpCapabilities', {});
+    // final rtpCapabilities = RtpCapabilities.fromMap(routerRtpCapabilities);
+
+    // TODO: fix //MissingPluginException(No implementation found for method createPeerConnection on channel FlutterWebRTC.Method) _ALL
+    return mediasoupDevice.load(routerRtpCapabilities);
+  }
+
+  Future _connectTransport(
+    // Transport transport,
+    String? transportId,
+    DtlsParameters dtlsParameters,
+  ) async {
+    return socket
+        .request('connectWebRtcTransport', {'transportId': transportId, 'dtlsParameters': dtlsParameters.toMap()});
+  }
+
+  //==================================================
+  //================CREATE TRANSPORTS=================
+  //==================================================
+  Future createSendTransport() => _createTransport(isSend: true);
+  Future createReceiveTransport() => _createTransport(isSend: false);
+
+  Future _createTransport({bool isOnline = true, required bool isSend}) async {
+    final transportResponse = await _requestCreateTransport(isSend);
+
+    if (isSend) {
+      _sendTransport = await _mediasoupDevice!.createSendTransport(
+        // "peerId", //unused parameter in the plugin _ALL
+        _peerId,
+        id: transportResponse["id"],
+        iceParameters: transportResponse["iceParameters"],
+        iceCandidates: transportResponse["iceCandidates"],
+        dtlsParameters: transportResponse["dtlsParameters"],
+        sctpParameters: transportResponse["sctpParameters"],
+      );
+
+      _clearSendTransportListeners();
+      _sendTransportListeners.add(_createSendTransPortOnListener());
+
+      _sendTransportListeners.add(
+        _sendTransport!.on('produce', this, (evf.Event event, Object? context) async {
+          _log("on('produce') ");
+          // _producers.add(event.eventData as Producer?);
+
+          final Producer producer = event.eventData as Producer;
+          onProducerCallBack(producer, _sendTransport!.id!);
+
+          // final stopwatch = Stopwatch()..start();
+          // _initProduce(event.eventData as Producer, stopwatch: stopwatch);
+        }),
+      );
+
+      _sendTransportListeners.add(
+        _sendTransport!.on('producerOffer', this, (evf.Event event, Object? context) async {
+          _log(">>>>> Producer Offer ===> ${event.eventData}");
+          // emit('producerOffer', this, event.eventData);
+        }),
+      );
+
+      _sendTransportListeners.add(
+        _sendTransport!.on('producerInfo', this, (evf.Event event, Object? context) async {
+          _log(">>>>> Producer Info ===> ${event.eventData}");
+          // emit('producerInfo', this, event.eventData);
+        }),
+      );
+    } else {
+      _receiveTransport = await _mediasoupDevice!.createSendTransport(
+        // "peerId", //unused parameter in the plugin _ALL
+        _peerId,
+        id: transportResponse["id"],
+        iceParameters: transportResponse["iceParameters"],
+        iceCandidates: transportResponse["iceCandidates"],
+        dtlsParameters: transportResponse["dtlsParameters"],
+        sctpParameters: transportResponse["sctpParameters"],
+      );
+
+      // _clearReceiveTransportListeners();
+      _receiveTransportListeners.add(_createReceiveTransPortOnListener());
+    }
+  }
+
+  Future _requestCreateTransport(bool isSend) {
+    return socket.request("createWebRtcTransport", {
+      "producing": isSend,
+      "consuming": !isSend,
+      "forceTcp": false,
+      "sctpCapabilities": {
+        "numStreams": {"OS": 1024, "MIS": 1024}
+      }
+    });
+  }
+
+  evf.Listener _createSendTransPortOnListener() => _createTransPortOnListener(_sendTransport!);
+  evf.Listener _createReceiveTransPortOnListener() => _createTransPortOnListener(_receiveTransport!);
+  evf.Listener _createTransPortOnListener(Transport transport) {
+    return transport.on('connect', this, (evf.Event event, Object? context) async {
+      final eventData = event.eventData is Map<String, dynamic> ? event.eventData as Map<String, dynamic>? : null;
+
+      if (eventData != null && eventData["data"] != null) {
+        final dtlsParameters = eventData["data"] as DtlsParameters;
+
+        // _log("[Connecting send transport");
+        await _connectTransport(transport.id, dtlsParameters);
+
+        // _log("[Send transport connected");
+        eventData["cb"]();
+      }
+    });
+  }
+
+  //==================================================
+  //================CLOSE TRANSPORTS==================
+  //==================================================
+  Future closeSendTransport({bool isOnline = true}) => _closeTransport(isSend: true);
+  Future closeReceiveTransport({bool isOnline = true}) => _closeTransport(isSend: false);
+
+  Future _closeTransport({bool isOnline = true, required bool isSend}) async {
+    // _incallManager.stop();
+    String? transportId;
+
+    if (isSend) {
+      if (_sendTransport != null) {
+        transportId = _sendTransport!.id;
+        await _sendTransport!.close();
+        _sendTransport = null;
+        // _producers = [];
+      }
+    } else {
+      if (_receiveTransport != null) {
+        transportId = _receiveTransport!.id;
+        await _receiveTransport!.close();
+        _receiveTransport = null;
+      }
+    }
+
+    if (isOnline) {
+      final response = await _requestCloseTransport(transportId);
+      _log("closeTransport isSend:$isSend => $response");
+    }
+  }
+
+  Future _requestCloseTransport(String? transportId) {
+    return socket.request("closeTransport", {"transportId": transportId});
+  }
+
+  //==================================================
+  void enableMic() async {
+    // if (_mediasoupDevice.canProduce(RTCRtpMediaType.RTCRtpMediaTypeAudio) == false) {
+    //   return;
+    // }
+
+    MediaStream? audioStream;
+    MediaStreamTrack track;
+    const String kind = "audio";
+    try {
+      audioStream = await createAudioStream();
+      track = audioStream.getAudioTracks().first;
+      _sendTransport!.produce(
+        track: track,
+        sendingRemoteRtpParameters: _mediasoupDevice!.sendingRemoteRtpParameters(kind) as Map?,
+        stream: audioStream,
+        kind: kind,
+      );
+    } catch (error) {
+      _log("enableMic.failed $error");
+      if (audioStream != null) {
+        await audioStream.dispose();
+      }
+    }
+  }
+
+  Future<void> disableMic() async {
+    //String micId = producersBloc.state.mic.id;
+
+    //producersBloc.add(ProducerRemove(source: 'mic'));
+
+    /*try {
+      await socket.request('closeProducer', {
+        'producerId': producerId
+      });
+    } catch (error) {}*/
+    // WebRTC.stopAudioSession();
+  }
+
+  Future<MediaStream> createAudioStream() async {
+    _log("createAudioStream");
+    // audioInputDeviceId = mediaDevicesBloc.state.selectedAudioInput.deviceId;
+    Map<String, dynamic> mediaConstraints = {
+      'audio': {'sampleSize': 16, 'channelCount': 1},
+      'video': false
+    };
+    return navigator.getUserMedia(mediaConstraints);
+  }
+  //==================================================
+
+  void _log(String msg) {
+    print("$runtimeType.$msg");
+  }
+
+  bool canProduceAudio() {
+    return true;
+    // return mediasoupDevice.canProduce(RTCRtpMediaType.RTCRtpMediaTypeAudio);
+  }
+
+  void dispose() async {
+    if (_isDisposed) {
+      return;
+    }
+
+    _clearReceiveTransportListeners();
+    _clearSendTransportListeners();
+    final bool isOnline = true; //TODO: get connection state _ALL
+    await closeSendTransport(isOnline: isOnline);
+    await closeReceiveTransport(isOnline: isOnline);
+    await socket.close();
+    _clearSendTransportListeners();
+    _clearReceiveTransportListeners();
+
+    _isDisposed = true;
+
+    // _sendTransport?.close();
+    // _receiveTransport?.close();
+    // _mediaDevicesBlocSubscription?.cancel();
+  }
+
+  join() {}
+}

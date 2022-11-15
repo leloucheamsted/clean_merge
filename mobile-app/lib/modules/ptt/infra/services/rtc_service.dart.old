@@ -1,0 +1,1224 @@
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:eventify/eventify.dart' as evf;
+import 'package:flutter/services.dart';
+import 'package:flutter_audio_manager/flutter_audio_manager.dart';
+import 'package:flutter_incall_manager/flutter_incall_manager.dart';
+
+// import 'package:mediasoup_client_flutter/mediasoup_client_flutter.dart';
+// import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+import 'package:flutter_mediasoup/flutter_mediasoup.dart';
+import 'package:flutter_mediasoup/mediasoup_client/media_track_stats.dart';
+import 'package:flutter_webrtc/webrtc.dart';
+
+// import 'package:get/get_navigation/src/snackbar/snack.dart';
+import 'package:intl/intl.dart';
+import 'package:mutex/mutex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:rxdart/subjects.dart';
+import 'package:tello_social_app/modules/core/services/dialog_service.dart';
+
+import '../enums.dart';
+import '../models/chat_user_model.dart';
+import '../models/local_audio_message.dart';
+import 'signaling.dart';
+
+typedef GroupModifiedCallback = Function(
+  Map<String, dynamic> groupModifiedEvent,
+);
+typedef StreamStateCallback = void Function(MediaStream? stream);
+
+class TxState {
+  StreamingState state;
+  ChatUser? user;
+  String? groupId;
+
+  TxState({this.state = StreamingState.idle, this.groupId, this.user});
+
+  bool get active => state != StreamingState.idle;
+}
+
+class RTCService extends evf.EventEmitter {
+  // static RTCService _singleton = RTCService._();
+
+  final Signaling signaling;
+
+  final int createTransportsPeriodAsSeconds; //AppSettings().createTransportsPeriod!
+  RTCService({
+    required this.signaling,
+    required this.createTransportsPeriodAsSeconds,
+  });
+
+  // NotificationService _notificationService = NotificationService();
+  bool? _isConnected;
+  bool? _connecting;
+  Completer? _connected;
+
+  Completer? prevRecordingComplete;
+  Completer? _sendTransportReady;
+  Completer? _producing;
+  Transport? _sendTransport;
+  Transport? _recvTransport;
+  Device? _device;
+  IncallManager? _incallManager;
+  String? _userId;
+  String? _positionId;
+  RxGroup? _activeGroup;
+  List<RxGroup>? _groups;
+  String? _txId;
+  String? _offlineTxId;
+  bool? _preparing;
+  bool? _cleaning;
+  bool? _sending;
+  ChatUser? _receivingFromUser;
+  String? _receivingFromGroupId;
+  RxGroup? _group;
+  ChatUser? _privateCallUser;
+  String? _privateGroupId;
+  List<Producer?> _producers = [];
+  LocalAudioMessage? currentMessage;
+  GroupModifiedCallback? onGroupModified;
+  void Function()? onCancelled;
+  void Function(String? txId)? onReady;
+
+  late BehaviorSubject<bool> setActiveGroupError$;
+  BehaviorSubject<bool>? isOnline$;
+  BehaviorSubject<bool>? timeOutConnecting$;
+  BehaviorSubject<TxState>? callState$;
+  Map<String, dynamic>? metrics;
+  Map? routerRtpCapabilities;
+
+  StreamSubscription? _signalingConnectedSub;
+  Timer? _createTransportsTimer;
+  Timer? _transportStatTimer;
+  TransmissionRecording? onlineRecording;
+  TransmissionRecording? offlineRecording;
+  final List<evf.Listener> _listeners = [];
+  final Mutex _mutex = Mutex();
+  List<evf.Listener> _sendTransportListeners = [];
+  List<evf.Listener> _receiveTransportListeners = [];
+  bool isMuted = false;
+  Device? get device => _device;
+  bool _disposing = false;
+
+  Future<RTCService> init() async {
+    try {
+      _log("init() RTCService");
+      _userId = Session.user?.id;
+      _positionId = Session.shift?.positionId;
+
+      final appDir = await getExternalStorageDirectory();
+      offlineRecording = TransmissionRecording(appDir: appDir!.path);
+      onlineRecording = TransmissionRecording(appDir: appDir.path);
+
+      _isConnected = false;
+      _connected = Completer();
+      _sendTransportReady = Completer();
+      _producing = Completer();
+      _device = Device();
+      await _device!.init();
+      setActiveGroupError$ = BehaviorSubject<bool>.seeded(false);
+      isOnline$ = BehaviorSubject<bool>.seeded(false);
+      callState$ = BehaviorSubject();
+      metrics = {};
+      _log("init() RTCService00000000000000");
+
+      signaling = Signaling()..init();
+      _connecting = true;
+
+      _log(
+        "Future<RTCService> init() async routerRtpCapabilities === $routerRtpCapabilities",
+      );
+      if (Platform.isIOS) {
+        _incallManager = IncallManager();
+      }
+
+      //the underline layer is clearing the transport channel so the timer recreate the transport when transport is disposed
+      _createTransportsTimer = Timer.periodic(Duration(seconds: createTransportsPeriodAsSeconds), (timer) async {
+        if (_isConnected == true) {
+          try {
+            await _mutex.acquire();
+            await createSendTransport();
+            await createReceiveTransport();
+          } catch (e, s) {
+            _log(
+              "Error while creating send receive transport $e ",
+              stackTrace: s,
+            );
+          } finally {
+            _mutex.release();
+          }
+        }
+      });
+
+      _signalingConnectedSub = signaling!.connected.listen((bool isConnected) async {
+        _isConnected = isConnected;
+        if (_disposing) return;
+        if (isConnected) {
+          if (!_connected!.isCompleted) {
+            _log("[RTC Service] signaling connected");
+
+            // Cleanup state
+            _connecting = false;
+            _preparing = false;
+            if (_offlineTxId == null) _sending = false;
+            _receivingFromUser = null;
+            _receivingFromGroupId = null;
+            _cleaning = false;
+
+            _connected!.complete();
+
+            await createReceiveTransport();
+            await createSendTransport();
+            _pushState();
+          }
+
+          _updateActiveGroup();
+          _updateMetrics();
+        } else {
+          _connecting = true;
+          _pushState();
+
+          if (onCancelled != null) {
+            onCancelled?.call();
+          }
+          _connected = Completer();
+          _producers = [];
+          await closeSendTransport(isOnline: false);
+          await closeReceiveTransport(isOnline: false);
+          _log("[RTC Service] signaling disconnected!!");
+        }
+      });
+      _log('RTC SERVICE INIT DONE 00000 ');
+      _listeners.add(
+        signaling!.on('newConsumer', this, (event, context) async {
+          try {
+            _log("[RTC Service] Receiving transmission!");
+            if (onCancelled != null) {
+              onCancelled?.call();
+            }
+            if (_activeGroup == null) return;
+            final message = event.eventData as Map<String, dynamic>;
+            if (!HomeController.to.isInRecordingMode) {
+              _handleNewConsumer(message);
+            }
+          } catch (e, s) {
+            _log(
+              "Consumer failure cant get receiving user $e",
+              stackTrace: s,
+            );
+          }
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('newPrivateConsumer', this, (event, context) async {
+          try {
+            _log("[RTC Service] Receiving Private transmission!");
+            if (onCancelled != null) {
+              onCancelled!();
+            }
+            if (_activeGroup == null) return;
+            final message = event.eventData as Map<String, dynamic>;
+            _handleNewConsumer(message, privateCall: true);
+          } catch (e, s) {
+            _log(
+              "Private Consumer failure cant get receiving user $e",
+              stackTrace: s,
+            );
+            /*Get.showSnackbarEx(
+              msg: 'Private Consumer failure cant get receiving user $e',
+              title: "Error Consumer event",
+            );*/
+          }
+        }),
+      );
+
+      _listeners.add(
+        signaling.on('consumerClosed', this, (event, context) {
+          closeCurrentConsumer();
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('newReceiveTransport', this, (event, context) async {
+          try {
+            _log("[RTC Service] newReceiveTransport");
+            final message = event.eventData as Map<String, dynamic>;
+
+            await createReceiveTransport();
+
+            signaling.acceptWithTimeout(message);
+          } catch (e, s) {
+            _log(
+              "new Receive Transport failure cant get receiving user $e",
+              stackTrace: s,
+            );
+          }
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('signalingHeartbeatResponse', this, (event, context) {
+          _log('signalingHeartbeatResponse: ${event.eventData}');
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('systemEventsSignalingHeartbeatResponse', this, (event, context) {
+          _log('systemEventsSignalingHeartbeatResponse: ${event.eventData}');
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('failedCreatingConsumer', this, (event, context) async {
+          final data = event.eventData as Map<String, dynamic>;
+          _log('failedCreatingConsumer ===> ${data['reason']}');
+          await _refreshReceiveTransport();
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('enableLogging', this, (event, context) {
+          emit('enableLogging', this);
+        }),
+      );
+
+      _listeners.add(
+        signaling!.on('disableLogging', this, (event, context) {
+          emit('disableLogging', this);
+        }),
+      );
+      _log('RTC SERVICE INIT DONE');
+    } catch (e, s) {
+      // _log("RTC SERVICE INIT Error $e", stackTrace: s);
+      rethrow;
+    }
+  }
+
+  _log(String msg, {StackTrace? stackTrace}) {
+    log(msg);
+  }
+
+  Future<void> dispose({bool isOnline = true}) async {
+    _log("START  RTC SERVICE dispose()() ");
+    _disposing = true;
+    _listeners.clear();
+    _createTransportsTimer?.cancel();
+    _transportStatTimer?.cancel();
+
+    await closeSendTransport(isOnline: isOnline);
+    await closeReceiveTransport(isOnline: isOnline);
+    // await Signaling().dispose();
+    signaling.dispose();
+
+    _clearSendTransportListeners();
+    _clearReceiveTransportListeners();
+
+    callState$?.close();
+    isOnline$?.close();
+    setActiveGroupError$.close();
+    metrics = {};
+    for (final listener in _listeners) {
+      listener.cancel();
+    }
+    _signalingConnectedSub?.cancel();
+    _isConnected = null;
+    _connecting = null;
+    _connected = null;
+
+    _sendTransportReady = null;
+    _producing = null;
+    _sendTransport = null;
+    _recvTransport = null;
+    _device = null;
+    _incallManager = null;
+    _userId = null;
+    _positionId = null;
+    _activeGroup = null;
+    _txId = null;
+    _preparing = null;
+    _cleaning = null;
+    _sending = null;
+    _receivingFromUser = null;
+    _receivingFromGroupId = null;
+    _group = null;
+    _privateCallUser = null;
+    _privateGroupId = null;
+    _producers = [];
+    currentMessage = null;
+    onGroupModified = null;
+    onCancelled = null;
+    onReady = null;
+    isOnline$ = null;
+    callState$ = null;
+    metrics = null;
+    routerRtpCapabilities = null;
+    _signalingConnectedSub = null;
+    _createTransportsTimer = null;
+    offlineRecording = null;
+
+    _disposing = false;
+    _log(
+      'FINISH RTC DISPOSING routerRtpCapabilities ==  $routerRtpCapabilities',
+    );
+    super.clear();
+  }
+
+  void closeCurrentConsumer() {
+    try {
+      _log(
+        "[RTC Service] consumer closed! send transport == $_sendTransport",
+      );
+      _receivingFromUser = null;
+      _receivingFromGroupId = null;
+      _stopAudioSession();
+      _stopTransportStat();
+      _pushState();
+    } catch (e, s) {
+      _log(
+        "consumer Closed failure cant get receiving user $e",
+        stackTrace: s,
+      );
+      /*Get.showSnackbarEx(
+        msg: 'consumer Closed failure cant get receiving user $e',
+        title: "Error Consumer event",
+      );*/
+    }
+  }
+
+  Future<void> _handleNewConsumer(
+    Map<String, dynamic> message, {
+    bool privateCall = false,
+  }) async {
+    final data = message["data"] as Map;
+    final groupId = data['groupId'] as String?;
+    if ((!privateCall &&
+            groupId != 'all' &&
+            HomeController.to.groups.firstWhereOrNull((element) => element.id == groupId) == null) ||
+        (!privateCall && _privateCallUser != null)) {
+      return;
+    }
+    RxGroup? currentGroup = _activeGroup;
+    if (privateCall) {
+      if (groupId != null) {
+        currentGroup = HomeController.to.groups.firstWhereOrNull((element) => element.id == groupId);
+      }
+      currentGroup ??= HomeController.to.groups.firstWhere(
+          (group) => group.members.users.firstWhereOrNull((user) => user.id == data['userId'].toString()) != null);
+      currentGroup ??= HomeController.to.groups.firstWhere((group) =>
+          group.members.positions
+              .firstWhereOrNull((position) => position.worker?.value?.id == data['userId'].toString()) !=
+          null);
+    }
+
+    _log(
+      "[RTC Service] Transmission from ${data['userId']} in group ${data['groupId']} ${_activeGroup!.members.users.length}",
+    );
+    final peerId = data["peerId"] as String?;
+    final kind = data["kind"] as String? ?? "audio";
+
+    //TODO: create a RTCUser model and use it instead of ChatUser, because data['user'] contains only id, profile and role
+
+    _receivingFromUser ??= currentGroup.members.users.firstWhereOrNull(
+      (element) => element.id == data['userId'].toString(),
+    );
+    _receivingFromUser ??= HomeController.to.adminUsers!.firstWhereOrNull(
+      (element) => element.id == data['userId'].toString(),
+    );
+
+    _receivingFromUser ??= ChatUser.unknownUser(data['userId'].toString());
+    _receivingFromUser!.isOnline = true;
+
+    if (_receivingFromUser == null) {
+      DialogService.showToast(
+        msg: 'Consumer failure cant get receiving user ${data['userId']} active group ${_activeGroup?.title}',
+        // title: "Error Consumer event",
+      );
+      //setActiveGroup(activeGroup);
+    }
+
+    _log(
+      "AFTER [RTC Service] Receiving transmission! ${_receivingFromUser?.fullName}  ${_receivingFromUser?.id}",
+    );
+    _receivingFromGroupId = data["groupId"] as String?;
+    _pushState(groupId: data["groupId"] as String?);
+
+    if (kind == 'audio') {
+      _startAudioSession();
+    }
+    if (_recvTransport == null) {
+      await createReceiveTransport();
+    }
+    if (_recvTransport != null) {
+      _log(
+        "11 START CONSUME ====> ${data["id"]} ${data["kind"]} ${data["rtpParameters"]}",
+      );
+      _recvTransport!.consume(
+        id: data["id"] as String?,
+        kind: data["kind"] as String?,
+        rtpParameters: data["rtpParameters"] as Map<dynamic, dynamic>?,
+      );
+      signaling!.acceptWithTimeout(message);
+      _startTransportStat(false, kind);
+    }
+  }
+
+  void _startTransportStat(bool producer, String kind) {
+    _transportStatTimer?.cancel();
+    _transportStatTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      MediaTrackStats? stat;
+      if (producer) {
+        stat = await _sendTransport!.getMediaTrackStat(kind: kind);
+      } else {
+        stat = await _recvTransport!.getMediaTrackStat(kind: kind);
+      }
+
+      emit('trackStats', this, stat);
+    });
+  }
+
+  void _stopTransportStat() {
+    _transportStatTimer?.cancel();
+  }
+
+  void _clearSendTransportListeners() {
+    for (final listener in _sendTransportListeners) {
+      listener.cancel();
+    }
+    _sendTransportListeners = [];
+  }
+
+  void _clearReceiveTransportListeners() {
+    for (final listener in _receiveTransportListeners) {
+      listener.cancel();
+    }
+    _receiveTransportListeners = [];
+  }
+
+  Future<void> _startAudioSession() async {
+    if (isMuted) return;
+    log("start audio session");
+    WebRTC.startAudioSession();
+
+    final value = DeviceOutputs().selectedDevice;
+    switch (value) {
+      case AudioPort.speaker:
+        if (_incallManager != null) {
+          _log('Forcing audio output to speaker');
+          _incallManager!.setSpeakerphoneOn(true);
+        }
+        WebRTC.enableSpeakerphone(true);
+        break;
+      case AudioPort.headphones:
+        FlutterAudioManager.changeToHeadphones();
+        break;
+      case AudioPort.bluetooth:
+        FlutterAudioManager.changeToBluetooth();
+        break;
+      case AudioPort.unknow:
+        // TODO: Handle this case.
+        break;
+      case AudioPort.receiver:
+        // TODO: Handle this case.
+        break;
+    }
+    log("WebRTC.startAudioSession()");
+  }
+
+  void muteAudioSession() {
+    if (_receivingFromUser != null) {
+      _stopAudioSession();
+    }
+    isMuted = true;
+  }
+
+  void unMuteAudioSession() {
+    isMuted = false;
+    if (_receivingFromUser != null) {
+      _startAudioSession();
+    }
+  }
+
+  Future<void> _stopAudioSession() async {
+    if (isMuted) return;
+    log("WebRTC.stopAudioSession()");
+    WebRTC.stopAudioSession();
+  }
+
+  void setPreparing() {
+    _preparing = true;
+    _pushState();
+  }
+
+  void unsetPreparing() {
+    _preparing = false;
+    _pushState();
+  }
+
+  //TODO: make a single variable for the StreamingState
+  void _pushState({String? groupId, ChatUser? user}) {
+    StreamingState state = StreamingState.idle;
+    _log("## connecting $_connecting sendtransport $_sendTransport");
+    if (_connecting == true || _sendTransport == null) {
+      state = StreamingState.connecting;
+    }
+    if (_sending == true) {
+      state = StreamingState.sending;
+    }
+    if (_preparing == true) {
+      state = StreamingState.preparing;
+    }
+    if (_cleaning == true) {
+      state = StreamingState.cleaning;
+    }
+    if (_receivingFromUser != null) {
+      state = StreamingState.receiving;
+    }
+    _log(
+      " Call state $state ${groupId ?? _activeGroup?.id} ${_receivingFromUser?.id} ",
+    );
+    isOnline$?.add(!(state == StreamingState.connecting));
+    if (callState$?.valueOrNull?.state != state) {
+      callState$?.add(
+        TxState(
+          state: state,
+          groupId: _receivingFromGroupId,
+          user: _receivingFromUser,
+        ),
+      );
+    }
+  }
+
+  void setMetric(String key, dynamic value) {
+    metrics![key] = value;
+    _updateMetrics();
+  }
+
+  Future<void> connect() async {
+    if (_userId == null) {
+      return _log('RtcService: _userId is null, returning...');
+    }
+
+    await signaling!.connect();
+    if (signaling!.connected.value == true) {
+      if (_sendTransport == null) {
+        await createSendTransport();
+      }
+      if (_recvTransport == null) {
+        await createReceiveTransport();
+      }
+    }
+  }
+
+  MediaStream? _remoteStream;
+  StreamStateCallback? onAddRemoteStream;
+  StreamStateCallback? onRemoveRemoteStream;
+
+  Future<void> createReceiveTransport() async {
+    if (_recvTransport != null) {
+      _log(
+        '[$_txId] Receive transport has already been set up _sendTransport == $_sendTransport',
+      );
+      return;
+    }
+    _log("[$_txId ] Creating receive transport");
+    final recvTransportResponse = await signaling!.sendWithTimeout('createWebRtcTransport', {
+      "producing": false,
+      "consuming": true,
+      "forceTcp": false,
+      "sctpCapabilities": {
+        "numStreams": {"OS": 1024, "MIS": 1024}
+      }
+    });
+
+    if (recvTransportResponse != null && recvTransportResponse is Map<String, dynamic>) {
+      _log(
+        "recvTransportResponse[sctpParameters] === > ${recvTransportResponse["sctpParameters"]} ,,,${recvTransportResponse["iceParameters"]},,,${recvTransportResponse["iceCandidates"]},,,${recvTransportResponse["sctpParameters"]}",
+      );
+      _recvTransport = await _device!.createRecvTransport(
+        signaling!.peerId,
+        id: recvTransportResponse["id"],
+        iceParameters: recvTransportResponse["iceParameters"],
+        iceCandidates: recvTransportResponse["iceCandidates"],
+        dtlsParameters: recvTransportResponse["dtlsParameters"],
+        sctpParameters: recvTransportResponse["sctpParameters"],
+      ) as Transport?;
+
+      _clearReceiveTransportListeners();
+
+      _receiveTransportListeners.add(
+        _recvTransport!.on('consumerOffer', this, (evf.Event event, Object? context) async {
+          emit('consumerOffer', this, event.eventData);
+        }),
+      );
+
+      _receiveTransportListeners.add(
+        _recvTransport!.on('consumerInfo', this, (evf.Event event, Object? context) async {
+          emit('consumerInfo', this, event.eventData);
+        }),
+      );
+
+      _receiveTransportListeners.add(
+        _recvTransport!.on('connect', this, (evf.Event event, Object? context) async {
+          final eventData = event.eventData is Map<String, dynamic> ? event.eventData as Map<String, dynamic>? : null;
+
+          if (eventData != null && eventData["data"] != null) {
+            final dtlsParameters = eventData["data"] as DtlsParameters;
+
+            _log(
+              "[$_txId] Connecting receive transport _sendTransport == $_sendTransport",
+            );
+            await _connectTransport(_recvTransport!, dtlsParameters);
+
+            _log(
+              "[$_txId] receive transport connected _sendTransport == $_sendTransport",
+            );
+            eventData["cb"]();
+          } else {
+            throw Exception("Can't read connect event.eventData");
+          }
+        }),
+      );
+
+      /*if (AppSettings().videoModeEnabled) {
+        _receiveTransportListeners.add(
+          _recvTransport!.on('onAddTrack', this, (evf.Event event, Object? context) async {
+            if (onAddRemoteStream != null) {
+              onAddRemoteStream!(_recvTransport!.pc!.remoteStreams[0]);
+            }
+          }),
+        );
+        _recvTransport!.onAddRemoteStream = (stream) {
+          if (onAddRemoteStream != null) {
+            onAddRemoteStream!(stream as MediaStream);
+          }
+          _remoteStream = stream as MediaStream;
+        };
+        _recvTransport!.pc!.onRemoveStream = (stream) {
+          _log("STAGE PC EVENT pc.onRemoveStream");
+          if (onRemoveRemoteStream != null) {
+            onRemoveRemoteStream!(stream);
+          }
+        };
+      }*/
+
+      _log("[$_txId] CALLING JOIN _sendTransport == $_sendTransport");
+      await join();
+    }
+  }
+
+  Future<void> createSendTransport({Stopwatch? stopwatch}) async {
+    _pushState();
+    _sendTransportReady = Completer();
+
+    if (_sendTransport == null) {
+      await _connected?.future;
+      _log("[$_txId] createSendTransport");
+      _log("[$_txId] Creating send transport");
+
+      final sendTransportResponse = await signaling?.sendWithTimeout('createWebRtcTransport', {
+        "producing": true,
+        "consuming": false,
+        "forceTcp": false,
+        "sctpCapabilities": {
+          "numStreams": {"OS": 1024, "MIS": 1024}
+        }
+      });
+      if (sendTransportResponse != null && sendTransportResponse is Map) {
+        _log(
+          "sendTransportResponse[sctpParameters] === > ${sendTransportResponse["sctpParameters"]} ,,,${sendTransportResponse["iceParameters"]},,,${sendTransportResponse["iceCandidates"]},,,${sendTransportResponse["sctpParameters"]}",
+        );
+        _sendTransport = await _device?.createSendTransport(
+          signaling!.peerId,
+          id: sendTransportResponse["id"],
+          iceParameters: sendTransportResponse["iceParameters"],
+          iceCandidates: sendTransportResponse["iceCandidates"],
+          dtlsParameters: sendTransportResponse["dtlsParameters"],
+          sctpParameters: sendTransportResponse["sctpParameters"],
+        ) as Transport?;
+        _clearSendTransportListeners();
+        _sendTransportListeners.add(
+          _sendTransport!.on('connect', this, (evf.Event event, Object? context) async {
+            final eventData = event.eventData is Map<String, dynamic> ? event.eventData as Map<String, dynamic>? : null;
+
+            if (eventData != null && eventData["data"] != null) {
+              final dtlsParameters = eventData["data"] as DtlsParameters;
+
+              _log("[$_txId] Connecting send transport");
+              await _connectTransport(_sendTransport!, dtlsParameters);
+
+              _log("[$_txId] Send transport connected");
+              eventData["cb"]();
+            }
+          }),
+        );
+
+        _sendTransportListeners.add(
+          _sendTransport!.on('produce', this, (evf.Event event, Object? context) async {
+            _log(
+              ">>>>> [$_txId] [${DateFormat('HH:MM:ss.SSS').format(DateTime.now().toUtc())}] on('produce') ",
+            );
+            _producers.add(event.eventData as Producer?);
+            final stopwatch = Stopwatch()..start();
+            _initProduce(event.eventData as Producer, stopwatch: stopwatch);
+          }),
+        );
+
+        _sendTransportListeners.add(
+          _sendTransport!.on('producerOffer', this, (evf.Event event, Object? context) async {
+            _log(">>>>> Producer Offer ===> ${event.eventData}");
+            emit('producerOffer', this, event.eventData);
+          }),
+        );
+
+        _sendTransportListeners.add(
+          _sendTransport!.on('producerInfo', this, (evf.Event event, Object? context) async {
+            _log(">>>>> Producer Info ===> ${event.eventData}");
+            emit('producerInfo', this, event.eventData);
+          }),
+        );
+
+        await join();
+      }
+    }
+
+    if (_sendTransportReady?.isCompleted == false) {
+      _sendTransportReady!.complete();
+    }
+
+    _pushState();
+  }
+
+  Future<void> _initProduce(Producer producer, {Stopwatch? stopwatch}) async {
+    _pushState();
+    _log(
+      ">>>>> [$_txId] [Sending produce group id == ${_group!.id} kind == ${producer.kind} rtp ==> ${producer.rtpParameters}",
+    );
+    dynamic res;
+    _log("_sendRTCMessage step 4.3 time = ${stopwatch?.elapsedMilliseconds}");
+    if (_group != null) {
+      await onlineRecording?.start(stopwatch: stopwatch);
+      _log(
+        "_sendRTCMessage step 4.4 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+      _startAudioSession();
+      if (_privateCallUser == null) {
+        List<Map<String, dynamic>> receipientList;
+        if (_groups == null) {
+          receipientList = _group!.members.users
+              .where((u) => u.id != _userId)
+              .map((u) => Recipient(recipientType: 'user', recipientId: u.id).toJson())
+              .toList();
+        } else {
+          receipientList = _groups!.map((g) => Recipient(recipientType: 'group', recipientId: g.id).toJson()).toList();
+        }
+        _log(
+          "_sendRTCMessage step 4.5 time = ${stopwatch?.elapsedMilliseconds}",
+        );
+        res = await signaling.sendWithTimeout('produce', {
+          'transportId': _sendTransport!.id,
+          'kind': producer.kind,
+          'rtpParameters': producer.rtpParameters,
+          'receipientList': receipientList,
+          'groupId': _group!.id
+        });
+        _log(
+          "_sendRTCMessage step 4.6 time = ${stopwatch?.elapsedMilliseconds}",
+        );
+      } else {
+        _log("_initProduce private user ${_privateCallUser!.fullName}");
+        res = await signaling.sendWithTimeout('privateProducer', {
+          'transportId': _sendTransport!.id,
+          'kind': producer.kind,
+          'rtpParameters': producer.rtpParameters,
+          'recipient': Recipient(
+            recipientType: 'user',
+            recipientId: _privateCallUser!.id,
+          ).toJson(),
+          'groupId': _privateGroupId ?? _group!.id
+        });
+      }
+      final result = res != null ? res['id'] as String? : "";
+      if (result == "busy") {
+        emit('privateCallBusy', this, _privateCallUser);
+        _producing!.complete();
+        return;
+      } else if (result == "recipientPeerNotFound") {
+        emit('recipientPeerNotFound', this, _privateCallUser);
+        _producing!.complete();
+        return;
+      }
+      _log(
+        "_sendRTCMessage step 4.7 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+    }
+    _log("_sendRTCMessage step 4.8 time = ${stopwatch?.elapsedMilliseconds}");
+    _log(">>>>> [$_txId]  produce response received");
+    if (res != null && res['produceFailed'] == null) {
+      _sending = true;
+      _pushState();
+      producer.id = res['id'] as String?;
+      producer.resume();
+      if (producer.kind == 'audio') {
+        currentMessage = LocalAudioMessage(
+          createdAt: DateTime.now().toUtc(),
+          recipients: _privateCallUser != null ? [Session.user!.id, _privateCallUser!.id] : null,
+        )..txId = _txId;
+      }
+      _log(
+        "_sendRTCMessage step 4.9 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+      _log("[$_txId] [RTC Service] new producer with id: ${producer.id}");
+    } else {
+      _txId = null;
+      _pushState();
+      _log("[$_txId] Bad response for produce - no producer ID!");
+    }
+
+    _producing!.complete();
+    _log(
+      "_sendRTCMessage step 4.9.1 time = ${stopwatch?.elapsedMilliseconds}",
+    );
+  }
+
+  Future<void> closeSendTransport({bool isOnline = true}) async {
+    _log("[$_txId] closeSendTransport");
+    // _incallManager.stop();
+    if (_sendTransport != null) {
+      _log("[$_txId] closeSendTransport - transport is not null - closing");
+      final transportId = _sendTransport!.id;
+      await _sendTransport!.close();
+      _sendTransport = null;
+      _producers = [];
+      if (isOnline) {
+        await signaling!.sendWithTimeout('closeTransport', {"transportId": transportId});
+      }
+    }
+  }
+
+  Future<void> closeReceiveTransport({bool isOnline = true}) async {
+    _log("[$_txId] closeReceiveTransport");
+    if (_recvTransport != null) {
+      _log(
+        "[$_txId] closeReceiveTransport - transport is not null - closing",
+      );
+      final transportId = _recvTransport!.id;
+      await _recvTransport!.close();
+      _recvTransport = null;
+      if (isOnline) {
+        await signaling!.sendWithTimeout('closeTransport', {"transportId": transportId});
+      }
+    }
+  }
+
+  // TODO: currently this is used only to send the rtp capabilities,
+  // this should be moved to both create send transport and create receive transport
+  Future<void> join() async {
+    _log("[$_txId] START join() async  _sendTransport == $_sendTransport");
+    if (routerRtpCapabilities == null) {
+      _log("Device is LOADING  _sendTransport == $_sendTransport");
+      routerRtpCapabilities = await signaling!.sendWithTimeout('getRouterRtpCapabilities', null) as Map?;
+      _log(
+        "Getting routerRtpCapabilities from router == $routerRtpCapabilities",
+      );
+      await _device!.load(
+        routerRtpCapabilities!, /*, supportedCodecs: MediaSettings().getSupportedCodecs()*/
+      );
+      _log(
+        "Device loaded  routerRtpCapabilities == ${_device!.rtpCapabilities}",
+      );
+    }
+    await signaling!.sendWithTimeout('join', {
+      "displayName": "",
+      "device": {"flag": "mobile", "name": "mobile", "version": "1.0"},
+      "rtpCapabilities": _device!.rtpCapabilities
+    });
+    _log(
+      "[$_txId] FINISH join() async  _sendTransport == ${_device!.rtpCapabilities}",
+    );
+  }
+
+  Future<void> closePrivateCall(ChatUser user) async {
+    await signaling!.sendWithTimeout('closePrivateCall', {
+      "recipient": Recipient(recipientType: 'user', recipientId: user.id).toJson(),
+      "groupId": HomeController.to.activeGroup?.id
+    });
+    _log("closePrivateCall ==> ${user.id}");
+  }
+
+  Future<void> _refreshSendTransport() async {
+    //await _device.load(routerRtpCapabilities);
+    await closeSendTransport();
+    await createSendTransport();
+  }
+
+  Future<void> _refreshReceiveTransport() async {
+    //await _device.load(routerRtpCapabilities);
+    await closeReceiveTransport();
+    await createReceiveTransport();
+  }
+
+  Future<String?> sendStream(
+    MediaStream stream,
+    RxGroup group, {
+    ChatUser? privateCallUser,
+    String? privateGroupId,
+    Stopwatch? stopwatch,
+  }) async {
+    await _mutex.acquire();
+    try {
+      _log("[$_txId] sendStream");
+      _preparing = true;
+      _pushState(groupId: group.id);
+
+      _txId = DateTime.now().millisecondsSinceEpoch.toString();
+      _group = group;
+      _privateCallUser = privateCallUser;
+      _privateGroupId = privateGroupId;
+      _log(
+        "_sendRTCMessage step 3.1 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+      await createSendTransport(stopwatch: stopwatch);
+      _log(
+        "_sendRTCMessage step 3.2 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+      await _sendTransportReady!.future;
+      _log("[$_txId] sendStream - transport ready");
+      _log(
+        "_sendRTCMessage step 3.3 time = ${stopwatch?.elapsedMilliseconds}",
+      );
+      _producing = Completer();
+
+      if (_producers.isEmpty) {
+        try {
+          if (stream.getAudioTracks().isNotEmpty) {
+            _log("Producing Audio ====>");
+            const String kind = 'audio';
+            await _sendTransport!
+                .produce(
+              kind: kind,
+              stream: stream,
+              track: stream.getAudioTracks().first,
+              sendingRemoteRtpParameters: _device!.sendingRemoteRtpParameters(kind) as Map?,
+            )
+                .catchError((e, s) {
+              _log(
+                "[$_txId] Error, unable to produce audio, txId: $_txId, _device.sendingRemoteRtpParameters are NULL ${_device!.sendingRemoteRtpParameters(kind)}, unable to produce!!! Error: $e",
+                stackTrace: s is StackTrace ? s : null,
+              );
+              _txId = null;
+            }).timeout(
+              Duration(
+                milliseconds: AppSettings().sendTransportTimeoutInMilliseconds!,
+              ),
+            );
+          }
+          if (stream.getVideoTracks().isNotEmpty) {
+            _log("Producing video ====>");
+            const String kind = 'video';
+            await _sendTransport!
+                .produce(
+              kind: kind,
+              stream: stream,
+              track: stream.getVideoTracks().first,
+              sendingRemoteRtpParameters: _device!.sendingRemoteRtpParameters(kind) as Map?,
+            )
+                .catchError((e, s) {
+              _log(
+                "[$_txId] Error, unable to produce video, _txId: $_txId, _device.sendingRemoteRtpParameters are NULL ${_device!.sendingRemoteRtpParameters(kind)}, unable to produce!!! Error: $e",
+                stackTrace: s is StackTrace ? s : null,
+              );
+              _txId = null;
+            }).timeout(
+              Duration(
+                milliseconds: AppSettings().sendTransportTimeoutInMilliseconds!,
+              ),
+            );
+          }
+          _log(
+            "_sendRTCMessage step 3.4 time = ${stopwatch?.elapsedMilliseconds}",
+          );
+        } catch (e, s) {
+          _log("[$_txId] Error, unable to produce!!!: $e", stackTrace: s);
+          SystemDialog.showConfirmDialog(
+            message: 'Unable to create Producer',
+          );
+          _txId = null;
+          _producing!.complete();
+        }
+      } else {
+        for (final producer in _producers) {
+          _initProduce(producer!, stopwatch: stopwatch);
+        }
+      }
+      await _producing!.future;
+      _log("[$_txId] producer ready");
+
+      if (_txId == null) {
+        _preparing = false;
+        _refreshSendTransport();
+      }
+      if (onReady != null) {
+        // _startAudioSession();
+        onReady?.call(_txId); //converted to null aware method call
+      }
+
+      _preparing = false;
+      _pushState();
+      _startTransportStat(
+        true,
+        stream.getVideoTracks().isNotEmpty ? "video" : "audio",
+      );
+      _log("[$_txId] sendStream complete");
+      //HapticFeedback.vibrate();
+    } catch (e, s) {
+      _log("sendStream Failed reason => $e", stackTrace: s);
+      rethrow;
+    } finally {
+      _mutex.release();
+    }
+    return _txId;
+  }
+
+  Future<LocalAudioMessage?> stopSending() async {
+    _log("[$_txId] stopSending");
+    _stopAudioSession();
+    final isPrivateProducer = _privateCallUser != null;
+    final groupId = _group?.id;
+    _group = null;
+    _sending = false;
+    _preparing = false;
+    _cleaning = true;
+    _pushState();
+    _stopTransportStat();
+    HapticFeedback.vibrate();
+
+    if (_producers.isNotEmpty) {
+      for (final producer in _producers) {
+        final String? producerId = producer!.id;
+        _log("[$_txId] pausing producer [${producer.id}]");
+        producer.pause();
+        if (!isPrivateProducer) {
+          await signaling!.sendWithTimeout('closeProducer', {'producerId': producerId});
+          _log("[$_txId] producer closed [$producerId]");
+        } else {
+          await signaling!.sendWithTimeout('closePrivateProducer', {
+            'producerId': producerId,
+            "recipient": Recipient(
+              recipientType: 'user',
+              recipientId: _privateCallUser!.id,
+            ).toJson(),
+            "groupId": groupId
+          });
+          _privateCallUser = null;
+          _privateGroupId = null;
+          _log("[$_txId] private producer closed [$producerId]");
+        }
+      }
+    }
+
+    onlineRecording?.stop(currentMessage!);
+    _cleaning = false;
+    _pushState();
+
+    _log("[$_txId] stopSending complete");
+
+    return currentMessage;
+  }
+
+  Future<void> _connectTransport(
+    Transport transport,
+    DtlsParameters dtlsParameters,
+  ) async {
+    await signaling!.sendWithTimeout(
+        'connectWebRtcTransport', {'transportId': transport.id, 'dtlsParameters': dtlsParameters.toMap()});
+  }
+
+  Future<void> setActiveGroup(RxGroup? activeGroup, {List<RxGroup>? groups}) async {
+    if (_receivingFromGroupId != null && activeGroup!.id != "all") {
+      closeCurrentConsumer();
+    }
+    _activeGroup = activeGroup;
+    _groups = groups;
+
+    if (_isConnected!) {
+      await _connected!.future;
+      await _updateActiveGroup();
+    }
+  }
+
+  Future<void> _updateActiveGroup() async {
+    _log("[$_txId] _updateActiveGroup [${_activeGroup?.title ?? ''}]");
+    final recipientList = _groups?.map((g) => Recipient(recipientType: 'group', recipientId: g.id).toJson()).toList();
+    try {
+      //FIXME: yes, it's a typo in the "receipientList" property, it should be fixed on the both ends
+      await signaling!.sendWithTimeout('activeGroup', {"groupId": _activeGroup?.id, "receipientList": recipientList});
+      setActiveGroupError$.add(false);
+    } catch (e, s) {
+      setActiveGroupError$.add(true);
+      _log('Failed to update active group: $e', stackTrace: s);
+    }
+  }
+
+  void _updateMetrics() {
+    if (signaling?.connected.value == true) {
+      signaling!.sendWithTimeout('metrics', metrics);
+    }
+  }
+
+  Future<void> recordOfflineMessage({ChatUser? privateCallUser}) async {
+    try {
+      await offlineRecording!.start(isOffline: true);
+      //If a PTT button was released right after being pressed
+      if (!HomeController.to.isRecordingOfflineMessage) return;
+      _offlineTxId = DateTime.now().millisecondsSinceEpoch.toString();
+      currentMessage = LocalAudioMessage(
+        createdAt: DateTime.now().toUtc(),
+        recipients: _privateCallUser != null ? [Session.user!.id, _privateCallUser!.id] : null,
+      )..txId = _offlineTxId;
+      _privateCallUser = privateCallUser;
+      _sending = true;
+      _pushState();
+      SoundPoolService().playRadioChirpSound();
+      HapticFeedback.vibrate();
+      _log('Offline message recording started');
+    } catch (e, s) {
+      _log("recordOfflineMessage failure: $e", stackTrace: s);
+      rethrow;
+    }
+  }
+
+  Future<void> stopOfflineRecording() async {
+    try {
+      if (_offlineTxId != null) {
+        _sending = false;
+        _cleaning = true;
+        _pushState();
+        offlineRecording!.stop(currentMessage!, isOffline: true);
+      }
+
+      _offlineTxId = null;
+      _privateCallUser = null;
+
+      _log('Offline message recording stopped');
+      _cleaning = false;
+      _pushState();
+      SoundPoolService().playRadioChirpEndSound();
+      HapticFeedback.vibrate();
+    } catch (e, s) {
+      _log("stopOfflineRecording failure: $e", stackTrace: s);
+      _sending = false;
+      _cleaning = false;
+      _pushState();
+      rethrow;
+    }
+  }
+
+  void showSnackBar() {
+    // Get.showSnackbarEx();
+  }
+}

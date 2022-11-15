@@ -1,0 +1,83 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "tello_social_app (debug)",
+            "request": "launch",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "flutterMode": "debug",
+            "program": "lib/main.dart"
+        },
+        {
+            "name": "tello_social_app (profile mode)",
+            "request": "launch",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "tello_social_app (release mode)",
+            "request": "launch",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "flutterMode": "release"
+        },
+        {
+            "name": "Flutter (test/modules/user/domain/usecases/sigin_usecase_test.dart)",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "request": "launch",
+            "program": "test/modules/user/domain/usecases/sigin_usecase_test.dart"
+        },
+        {
+            "name": "socket_test",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "request": "launch",
+            "program": "test/socket/socket_test.dart"
+        },
+        {
+            "name": "Iphone 14 Pro Max Simulator",
+            "request": "launch",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "deviceId": "5A4EC339-9687-4B9B-9318-EBF0A6DE8A49",
+            // "program": "user_app/lib/src/app/flavors/main_development.dart",
+        },
+        {
+            "name": "iPhone SE (3rd generation) Simulator",
+            "request": "launch",
+            "type": "dart",
+            "args": [
+                "--no-sound-null-safety"
+            ],
+            "deviceId": "CAFA6DE6-DC8B-428C-9992-CEFB4328E31C",
+            // "program": "user_app/lib/src/app/flavors/main_development.dart",
+        },
+    ],
+    "compounds": [
+        {
+            "name": "Dev Simulators",
+            "configurations": [
+                "iPhone SE (3rd generation) Simulator",
+                "Iphone 14 Pro Max Simulator"
+            ],
+        },
+    ]
+}

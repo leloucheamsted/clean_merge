@@ -1,0 +1,206 @@
+import 'package:flutter_mediasoup/flutter_mediasoup.dart';
+import 'package:tello_social_app/modules/ptt/infra/services/interfaces/i_socket.dart';
+
+class RoomService {
+  final BaseSocket socket;
+
+  Device? _mediasoupDevice;
+  bool _produce = false;
+  bool _consume = true;
+  final Map sctpCapabilities = {
+    "numStreams": {"OS": 1024, "MIS": 1024}
+  };
+
+  RoomService(this.socket) {
+    socket.onNotificationCallBack = onSocketNotification;
+    socket.onRequestCallBack = onSocketRequest;
+  }
+
+  onSocketNotification(notification) {
+    switch (notification['method']) {
+      case 'roomReady':
+      case 'roomBack':
+        _joinRoom();
+        break;
+      default:
+    }
+  }
+
+  onSocketRequest(request, accept, reject) {}
+  void log(String msg) {
+    print("$runtimeType.$msg");
+  }
+
+  Future<void> _joinRoom() async {
+    try {
+      _mediasoupDevice = Device();
+      // Get routerRtpCapabilities response Map data from server.
+
+      Map routerRtpCapabilities = await socket.request(
+        'getRouterRtpCapabilities',
+        {},
+      );
+
+      log('getted getRouterRtpCapabilities: $routerRtpCapabilities');
+
+      ///Load the device with the router RTP capabilities.
+      // final rtpCapabilities = RtpCapabilities.fromMap(routerRtpCapabilities);
+      // rtpCapabilities.headerExtensions.removeWhere((he) => he.uri == 'urn:3gpp:video-orientation');
+      await _mediasoupDevice!.load(routerRtpCapabilities);
+
+      _produce = true;
+      /*if (_mediasoupDevice!.canProduce(RTCRtpMediaType.RTCRtpMediaTypeAudio) == true ||
+          _mediasoupDevice!.canProduce(RTCRtpMediaType.RTCRtpMediaTypeVideo) == true) {
+        _produce = true;
+      }*/
+
+      if (_produce) {
+        // Create a transport in the server via socket io client for sending our media through it.
+        Map transportInfo = await socket.request('createWebRtcTransport', {
+          'forceTcp': false,
+          'producing': true,
+          'consuming': false,
+          'sctpCapabilities': sctpCapabilities,
+          // 'sctpCapabilities': _mediasoupDevice!.sctpCapabilities.toMap(),
+        });
+        log('getted transportInfo: $transportInfo');
+
+        _sendTransport = _mediasoupDevice!.createSendTransport(
+          transportInfo,
+          producerCallback: _producerCallback,
+        );
+
+        // Set transport method "connect" event handler connectWebRtcTransport send via socket io client.
+        // with params: transportId, dtlsParameters
+        // Done in the server, tell our transport.
+        // Something was wrong in server side.
+        _sendTransport!.on('connect', (Map data) async {
+          await _socketIo!
+              .sendEventEmitter('connectWebRtcTransport', {
+                'transportId': _sendTransport!.id,
+                'dtlsParameters': data['dtlsParameters'].toMap(),
+              })
+              .then(data['callback'])
+              .catchError(data['errback']);
+        });
+
+        // Set transport "produce" event handler.
+        // Here we must communicate our local parameters to our remote transport.
+        // Done in the server, pass the response to our transport.
+        // Something was wrong in server side.
+        _sendTransport!.on('produce', (Map data) async {
+          try {
+            Map response = await _socketIo!.sendEventEmitterAck(
+              'produce',
+              {
+                'transportId': _sendTransport!.id,
+                'kind': data['kind'],
+                'rtpParameters': data['rtpParameters'].toMap(),
+                if (data['appData'] != null) 'appData': Map<String, dynamic>.from(data['appData'])
+              },
+            );
+
+            data['callback'](response['id']);
+          } catch (error) {
+            data['errback'](error);
+          }
+        });
+
+        // Set transport "producedata" event handler.
+        // Here we must communicate our local parameters to our remote transport.
+        // Done in the server, pass the response to our transport.
+        // Something was wrong in server side.
+        _sendTransport!.on('producedata', (data) async {
+          try {
+            Map response = await _socketIo!.sendEventEmitterAck('produceData', {
+              'transportId': _sendTransport!.id,
+              'sctpStreamParameters': data['sctpStreamParameters'].toMap(),
+              'label': data['label'],
+              'protocol': data['protocol'],
+              'appData': data['appData'],
+            });
+
+            data['callback'](response['id']);
+          } catch (error) {
+            data['errback'](error);
+          }
+        });
+      }
+
+      if (_consume) {
+        // Create a transport in the server via socket io client for receiving our media through it.
+        Map transportInfo = await _socketIo!.sendEventEmitterAck(
+          'createWebRtcTransport',
+          {
+            'forceTcp': false,
+            'producing': false,
+            'consuming': true,
+            'sctpCapabilities': _mediasoupDevice!.sctpCapabilities.toMap(),
+          },
+        );
+        log('getted consume transportInfo: $transportInfo');
+
+        _recvTransport = _mediasoupDevice!.createRecvTransportFromMap(
+          transportInfo,
+          consumerCallback: _consumerCallback,
+        );
+        // Set transport method "connect" event handler connectWebRtcTransport send via socket io client.
+        // with params: transportId, dtlsParameters
+        // Done in the server, tell our transport.
+        // Something was wrong in server side.
+        _recvTransport!.on(
+          'connect',
+          (data) {
+            _socketIo!
+                .sendEventEmitter(
+                  'connectWebRtcTransport',
+                  {
+                    'transportId': _recvTransport!.id,
+                    'dtlsParameters': data['dtlsParameters'].toMap(),
+                  },
+                )
+                .then(data['callback'])
+                .catchError(data['errback']);
+          },
+        );
+      }
+
+      // Request to join the room.
+      // displayName: display name of the user.
+      // device: device information.
+      // rtpCapabilities: RTP capabilities of the user.
+      // sctpCapabilities: SCTP capabilities of the user.
+      // Response peers from the server.
+
+      Map response = await _socketIo!.sendEventEmitterAck('join', {
+        'displayName': displayName,
+        'picture': '',
+        'rtpCapabilities': _mediasoupDevice!.rtpCapabilities.toMap(),
+        'sctpCapabilities': _mediasoupDevice!.sctpCapabilities.toMap(),
+      });
+      log('getted join response $response');
+
+      response['peers'].forEach((value) {
+        peersBloc.add(PeerAdd(newPeer: value));
+      });
+
+      if (_produce) {
+        // Create a producer for sending our media.
+        // Enable microphone and camera.
+        _localStream = await createStream();
+        enableMic();
+        enableWebcam();
+
+        _sendTransport!.on('connectionstatechange', (connectionState) {
+          if (connectionState == 'connected') {
+            // enableChatDataProducer();
+            // enableBotDataProducer();
+          }
+        });
+      }
+    } catch (error) {
+      print(error);
+      close();
+    }
+  }
+}

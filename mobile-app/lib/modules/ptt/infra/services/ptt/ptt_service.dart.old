@@ -1,0 +1,110 @@
+import 'package:flutter_mediasoup/flutter_mediasoup.dart';
+import 'package:tello_social_app/modules/ptt/infra/services/interfaces/i_socket.dart';
+import 'package:tello_social_app/modules/ptt/infra/services/ptt/blocs/producers_bloc.dart';
+import 'package:tello_social_app/modules/ptt/infra/services/ptt/mediasoup_svc.dart';
+import 'package:tello_social_app/modules/ptt/infra/services/ptt/blocs/peers_bloc.dart';
+import 'package:uuid/uuid.dart';
+
+class PttService {
+  final BaseSocket socket;
+  late final MediaSoupSvc mediaSoupSvc;
+  final PeersBloc peersBloc = PeersBloc();
+  final ProducersBloc producersBloc = ProducersBloc();
+
+  String? roomId;
+  PttService(this.socket) {
+    mediaSoupSvc = MediaSoupSvc(
+      socket: socket,
+      onProducerCallBack: onProducer,
+    );
+
+    final String peerId = const Uuid().v1();
+    mediaSoupSvc.setPeerId(peerId);
+
+    socket.onNotificationCallBack = onSocketNotification;
+    socket.onRequestCallBack = onSocketRequest;
+    socket.onSocketEventCallBack = onSocketEvent;
+  }
+  void onProducer(Producer producer, String transportId) async {
+    _log("onProducer $producer");
+    producersBloc.add(producer);
+
+    try {
+      Map response = await socket.request(
+        'produce',
+        {
+          'transportId': transportId,
+          'kind': producer.kind,
+          'rtpParameters': producer.rtpParameters,
+          // 'receipientList': receipientList,
+          // 'groupId': _group!.id
+          'groupId': roomId
+        },
+      );
+      //TODO: callback
+      _log(response.toString());
+      // Done in the server, pass the response to our transport.
+      // data['callback'](response['id']);
+    } catch (error) {
+      // Something was wrong in server side.
+      // data['errback'](error);
+      _log(error.toString());
+    }
+  }
+
+  void connect({String? connectionPath, String? p_roomId}) {
+    roomId = p_roomId;
+    if (connectionPath != null) {
+      socket.setConnectionPath(connectionPath);
+    }
+    socket.connect();
+  }
+
+  void onSocketEvent(SocketEventType eventType) {
+    if (eventType == SocketEventType.open) {
+      _joinRoom();
+    }
+  }
+
+  void onSocketNotification(notification) {
+    switch (notification['method']) {
+      case 'roomReady':
+      case 'roomBack':
+        _joinRoom();
+        break;
+      default:
+    }
+  }
+
+  void onSocketRequest(request, accept, reject) {}
+  void _log(String msg) {
+    print("$runtimeType.$msg");
+  }
+
+  Future<void> _joinRoom() async {
+    mediaSoupSvc.createDevice();
+    await mediaSoupSvc.getAndLoadRouterCapabilities(); //wont work on unit test
+
+    final Map rtpCapabilities = mediaSoupSvc.getDeviceRtpCapabilities();
+
+    await socket.request("join", {
+      "displayName": "",
+      "device": {"flag": "mobile", "name": "mobile", "version": "1.0"},
+      "rtpCapabilities": rtpCapabilities,
+    });
+    await mediaSoupSvc.createSendTransport();
+
+    final bool canProduceAudio = mediaSoupSvc.canProduceAudio();
+
+    // mediaSoupSvc.enableMic();
+  }
+
+  void enableMic() {
+    mediaSoupSvc.enableMic();
+  }
+
+  void dispose() {
+    socket.close();
+    mediaSoupSvc.dispose();
+  }
+}

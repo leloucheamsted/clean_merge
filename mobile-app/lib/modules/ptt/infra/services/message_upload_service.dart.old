@@ -1,0 +1,221 @@
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:bazz_flutter/modules/synchronization/sync_service.dart';
+import 'package:collection/collection.dart' as collection;
+import 'package:mutex/mutex.dart';
+import 'package:path/path.dart' as p;
+import 'package:tello_social_app/modules/chat/domain/repositories/i_message.repo.dart';
+import 'package:tello_social_app/modules/core/repositories/base_repo.dart';
+
+import 'package:tello_social_app/modules/core/services/interfaces/iconnectivity_service.dart';
+
+import '../models/local_audio_message.dart';
+
+class MessageUploadService {
+  final IConnectivityService connectivityService;
+  final IMessageRepo messageRepo;
+
+  final _mutex = Mutex();
+
+  // late GetStorage messagesUploadQueue;
+  bool _processingQueue = false;
+
+  Completer syncMessagesCompleted = Completer();
+  int _messagesLeft = 0;
+
+  int get messagesLeft$ => _messagesLeft;
+
+  set messagesLeft(int val) => _messagesLeft = val;
+
+  bool get hasData$ => messagesLeft$ > 0;
+
+  // ANOTHER WAY OF HANDLING SYNC FUTURES - REMOVE IT LATER, if the current scheme works well.
+  // Stream<int> _messagesLeftBroadcast;
+
+  // Future<bool> get syncMessagesCompleted => _messagesLeftBroadcast.any((messagesLeft) {
+  //   print('_messagesLeftBroadcast messagesLeft: $messagesLeft');
+  //   return messagesLeft == 0;
+  // });
+
+  bool _closing = false;
+
+  // StreamSubscription _connectivitySub;
+  late StreamSubscription _isOnlineSub;
+
+  String? uploadFailedMsgKey;
+  int uploadFailedCount = 0;
+  MessageUploadService({
+    required this.connectivityService,
+    required this.messageRepo,
+  });
+
+  Future<void> onInit() async {
+    //TODO: moved it to main.dart, remove if it works well there
+    // await GetStorage.init('MessageUploadQueue');
+    messagesUploadQueue = GetStorage(StorageKeys.messageUploadQueueBox);
+    messagesLeft$ = messagesUploadQueue.getKeys<Iterable<String>>().length;
+    if (messagesLeft$ == 0) syncMessagesCompleted.complete();
+    // ANOTHER WAY OF HANDLING SYNC FUTURES - REMOVE IT LATER, if the current scheme works well.
+    // _messagesLeftBroadcast = _messagesLeft$.stream.asBroadcastStream();
+    _isOnlineSub = connectivityService.statusStream.listen((online) {
+      // _isOnlineSub = HomeController.to.isOnline$.listen((online) {
+      if (online) return;
+
+      _mutex.protect(() {
+        uploadFailedCount = 0;
+        uploadFailedMsgKey = null;
+        return Future.value();
+      });
+    });
+  }
+
+  void _log(String msg, {StackTrace? stackTrace}) {
+    log("$runtimeType $msg");
+  }
+
+  void dispose() {
+    _closing = true;
+    _isOnlineSub.cancel();
+  }
+
+  Future<void> addAndProcess(LocalAudioMessage msg) async {
+    try {
+      await messagesUploadQueue.write(msg.txId!, msg.toMap());
+      messagesLeft$++;
+      processQueue();
+    } catch (e, s) {
+      _log('Failed writing audio message: $e', stackTrace: s);
+    }
+  }
+
+  Future<bool> get _isConnected => connectivityService.isConnected;
+
+  Future<void> processQueue({bool anyway = false}) async {
+    // if (_closing || !HomeController.to.isOnline || (!anyway && _processingQueue)) return;
+    final bool isConnected = await _isConnected;
+    if (_closing || !isConnected || (!anyway && _processingQueue)) return;
+    _processingQueue = true;
+
+    final keys = messagesUploadQueue.getKeys<Iterable<String>>().toList()..sort(collection.compareNatural);
+
+    _log(
+      'MessageUploadService: messagesLeft => ${messagesLeft$}, keys.length => ${keys.length}',
+    );
+    messagesLeft$ = keys.length;
+
+    if (keys.isEmpty) {
+      _log('MessageUploadService: no tracks to load!');
+      if (!syncMessagesCompleted.isCompleted) syncMessagesCompleted.complete();
+      _processingQueue = false;
+      return;
+    }
+
+    _log(
+      'MessageUploadService: processing queue... ${messagesLeft$} tracks pending',
+    );
+    if (syncMessagesCompleted.isCompleted) {
+      syncMessagesCompleted = Completer<bool?>();
+    }
+    final msgKey = keys.last;
+    final messageMap = messagesUploadQueue.read<Map<String, dynamic>>(msgKey);
+    final message = messageMap != null ? LocalAudioMessage.fromMap(messageMap) : null;
+    final localFile = message != null ? File(message.filePath!) : null;
+
+    if (localFile?.existsSync() != true) {
+      _log(
+        'MessageUploadService: cannot form LocalAudioMessage from the $msgKey, deleting it...',
+      );
+      messagesUploadQueue.remove(msgKey);
+      messagesLeft$--;
+      if (messagesLeft$ == 0) {
+        syncMessagesCompleted.complete();
+        _processingQueue = false;
+        return;
+      }
+      processQueue(anyway: true);
+    }
+
+    try {
+      // if (SyncService.to.hasOtherData$) throw WaitOtherDataSyncCompleted();
+
+      final signedUrlResponseEither = await messageRepo.getSignedUrl(p.basename(message!.filePath!));
+
+      if (signedUrlResponseEither.isLeft()) {
+        throw (signedUrlResponseEither as Left).value;
+      }
+
+      final signedUrlResponse = signedUrlResponseEither.getOrElse(() => throw Exception("buggy"));
+
+      // signedUrlResponse.getOrElse(() => throw signedUrlResponse.)
+      // if (signedUrlResponse == null) throw 'signedUrlResponse is null!';
+
+      _log("MessageUploadService -> Get SignedUrl## ${signedUrlResponse.signedUrl}");
+
+      await messageRepo.uploadAudioFile(signedUrlResponse.signedUrl!, localFile!);
+
+      _log("Get signedUrlResponse.publicUrl## ${signedUrlResponse.publicUrl} localFile = $localFile");
+      // _log("${message.toMap()}", isWrapped: true);
+
+      //TODO: merge with audi file upload
+      // await messageRepo.uploadMetadata(message..fileUrl = signedUrlResponse.publicUrl);
+
+      messagesUploadQueue.remove(msgKey);
+      await localFile.delete();
+      uploadFailedCount = 0;
+      uploadFailedMsgKey = null;
+      messagesLeft--;
+
+      _log(
+        'MessageUploadService: ${message.txId} audio message uploaded and deleted! Messages left: ${messagesLeft$}',
+      );
+
+      if (messagesLeft$ == 0) {
+        syncMessagesCompleted.complete();
+      } else {
+        processQueue(anyway: true);
+      }
+    } catch (e, s) {
+      if (e is WaitOtherDataSyncCompleted) {
+        _log(e.message);
+      } else {
+        _log(
+          'MessageUploadService: error while uploading audio message: $e',
+          stackTrace: s,
+        );
+
+        _mutex.protect(() async {
+          uploadFailedMsgKey ??= msgKey;
+          if (msgKey == uploadFailedMsgKey) {
+            uploadFailedCount++;
+          }
+          if (uploadFailedCount >= 3) {
+            _log(
+              'MessageUploadService: reached error threshold for uploadFailedMsgKey: $e',
+            );
+            messagesUploadQueue.remove(msgKey);
+            messagesLeft$--;
+            await localFile!.delete();
+            uploadFailedCount = 0;
+            uploadFailedMsgKey = null;
+          }
+        });
+
+        if (!syncMessagesCompleted.isCompleted) {
+          syncMessagesCompleted.completeError(
+            'MessageUploadService: error while uploading audio message: $e',
+          );
+          // ANOTHER WAY OF HANDLING SYNC FUTURES - REMOVE IT LATER, if the current scheme works well.
+          // _messagesLeft$.addError('error while uploading audio message: $e');
+        }
+      }
+    } finally {
+      _processingQueue = false;
+    }
+  }
+}
+
+class WaitOtherDataSyncCompleted {
+  String message = 'Other data is not synchronized yet!';
+}

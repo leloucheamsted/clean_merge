@@ -1,0 +1,55 @@
+import 'package:flutter_modular/flutter_modular.dart';
+
+import '../../domain/entities/handshake.entity.dart';
+import '../../infra/services/ptt/ptt_service.dart.all';
+
+class TestConnectbloc {
+  final String tokenBazz =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlbGkxMjMiLCJqdGkiOiIyOTk0ODgxNC05MWU5LTRlNjAtOWE2Mi1mMWQxYzFmNmRmNmMiLCJyb2xlIjoiU3VwZXJ2aXNvciIsImlkIjoiNjAwNzJlNmQ5OTUwYTVkZTdlZGY0YjExIiwic2Vzc2lvbiI6IiIsImV4cCI6MTgyMzQ0NzUzNiwiaXNzIjoiQmF6ekF1dGgiLCJhdWQiOiJCYXp6U2VydmVyR29sYXJzIn0.0DGuOSeBZg4s1dojv_uZIUgVCThps94S84OTMB4KrSo";
+  final String tokenSocial =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwNzNhYWMwZjc5MTU0M2RlOGYzYTczOTkxMWU3ZTNkZiIsInVuaXF1ZV9uYW1lIjoiMDczYWFjMGY3OTE1NDNkZThmM2E3Mzk5MTFlN2UzZGYiLCJqdGkiOiIwNGNjYzc0My0wMDE2LTQ5NDUtOGZkYi03OTc5YjA3NTgyNGQiLCJpYXQiOiIxNjY1Njc5ODc1IiwiYXVkIjoiNTY5NzM0IiwibmJmIjoxNjY1Njc5ODc1LCJleHAiOjE2Njc3NTM0NzUsImlzcyI6Imh0dHBzOi8vbG9jYWxob3N0OjcyNjMifQ.7IXJzVZHkl8Ozx52cCtxRVI3is4gnq7eu7kb_Vi1hko";
+
+  late final PttService _pttService = Modular.get();
+
+  HandshakeEntity _createBazzHandShakeEntity() {
+    return HandshakeEntity(
+      schema: "https",
+      // port: 3030,
+      host: "ms.dev.bazzptt.com",
+      token: tokenBazz,
+      peerId: "3dbdf900-4176-11ed-8985-955791909b8b",
+      userId: "60072e6d9950a5de7edf4b11",
+      groupId: "1",
+      isBackgroundService: true,
+    );
+  }
+
+  HandshakeEntity _createTelloHandShakeEntity() {
+    return HandshakeEntity(
+      schema: "http",
+      // port: 443,
+      host: "mediasoup.dev.tello-social.tello-technologies.com",
+      token: tokenSocial,
+      peerId: "3dbdf900-4176-11ed-8985-955791909b8b",
+      userId: "60072e6d9950a5de7edf4b11",
+      groupId: "1",
+      isBackgroundService: true,
+    );
+  }
+
+  void connect() {
+    // final HandshakeEntity handshakeEntity = _createBazzHandShakeEntity();
+    final HandshakeEntity handshakeEntity = _createTelloHandShakeEntity();
+    final String path = handshakeEntity.uri.toString().replaceAll("http", "ws");
+
+    _pttService.connect(connectionPath: path, p_roomId: handshakeEntity.groupId);
+  }
+
+  void enableMic() {
+    _pttService.enableMic();
+  }
+
+  void dispose() {
+    _pttService.dispose();
+  }
+}

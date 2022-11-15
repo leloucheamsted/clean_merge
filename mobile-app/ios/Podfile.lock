@@ -1,0 +1,155 @@
+PODS:
+  - audio_session (0.0.1):
+    - Flutter
+  - audioplayers_darwin (0.0.1):
+    - Flutter
+  - connectivity_plus (0.0.1):
+    - Flutter
+    - ReachabilitySwift
+  - device_region (0.0.1):
+    - Flutter
+  - Flutter (1.0.0)
+  - flutter_audio_manager (0.0.1):
+    - Flutter
+  - flutter_contacts (0.0.1):
+    - Flutter
+  - flutter_incall_manager (0.0.1):
+    - Flutter
+  - flutter_media_metadata (0.0.1):
+    - Flutter
+  - flutter_secure_storage (3.3.1):
+    - Flutter
+  - flutter_sim_country_code (0.0.1):
+    - Flutter
+  - flutter_webrtc (0.9.4):
+    - Flutter
+    - WebRTC-SDK (= 104.5112.02)
+  - FMDB (2.7.5):
+    - FMDB/standard (= 2.7.5)
+  - FMDB/standard (2.7.5)
+  - image_cropper (0.0.4):
+    - Flutter
+    - TOCropViewController (~> 2.6.1)
+  - image_picker_ios (0.0.1):
+    - Flutter
+  - just_audio (0.0.1):
+    - Flutter
+  - path_provider_ios (0.0.1):
+    - Flutter
+  - phone_number (1.0.0):
+    - Flutter
+    - PhoneNumberKit/PhoneNumberKitCore (= 3.3.4)
+  - PhoneNumberKit/PhoneNumberKitCore (3.3.4)
+  - ReachabilitySwift (5.0.0)
+  - record (0.0.1):
+    - Flutter
+  - soundpool (0.0.1):
+    - Flutter
+  - sqflite (0.0.2):
+    - Flutter
+    - FMDB (>= 2.7.5)
+  - TOCropViewController (2.6.1)
+  - WebRTC-SDK (104.5112.02)
+
+DEPENDENCIES:
+  - audio_session (from `.symlinks/plugins/audio_session/ios`)
+  - audioplayers_darwin (from `.symlinks/plugins/audioplayers_darwin/ios`)
+  - connectivity_plus (from `.symlinks/plugins/connectivity_plus/ios`)
+  - device_region (from `.symlinks/plugins/device_region/ios`)
+  - Flutter (from `Flutter`)
+  - flutter_audio_manager (from `.symlinks/plugins/flutter_audio_manager/ios`)
+  - flutter_contacts (from `.symlinks/plugins/flutter_contacts/ios`)
+  - flutter_incall_manager (from `.symlinks/plugins/flutter_incall_manager/ios`)
+  - flutter_media_metadata (from `.symlinks/plugins/flutter_media_metadata/ios`)
+  - flutter_secure_storage (from `.symlinks/plugins/flutter_secure_storage/ios`)
+  - flutter_sim_country_code (from `.symlinks/plugins/flutter_sim_country_code/ios`)
+  - flutter_webrtc (from `.symlinks/plugins/flutter_webrtc/ios`)
+  - image_cropper (from `.symlinks/plugins/image_cropper/ios`)
+  - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
+  - just_audio (from `.symlinks/plugins/just_audio/ios`)
+  - path_provider_ios (from `.symlinks/plugins/path_provider_ios/ios`)
+  - phone_number (from `.symlinks/plugins/phone_number/ios`)
+  - record (from `.symlinks/plugins/record/ios`)
+  - soundpool (from `.symlinks/plugins/soundpool/ios`)
+  - sqflite (from `.symlinks/plugins/sqflite/ios`)
+
+SPEC REPOS:
+  trunk:
+    - FMDB
+    - PhoneNumberKit
+    - ReachabilitySwift
+    - TOCropViewController
+    - WebRTC-SDK
+
+EXTERNAL SOURCES:
+  audio_session:
+    :path: ".symlinks/plugins/audio_session/ios"
+  audioplayers_darwin:
+    :path: ".symlinks/plugins/audioplayers_darwin/ios"
+  connectivity_plus:
+    :path: ".symlinks/plugins/connectivity_plus/ios"
+  device_region:
+    :path: ".symlinks/plugins/device_region/ios"
+  Flutter:
+    :path: Flutter
+  flutter_audio_manager:
+    :path: ".symlinks/plugins/flutter_audio_manager/ios"
+  flutter_contacts:
+    :path: ".symlinks/plugins/flutter_contacts/ios"
+  flutter_incall_manager:
+    :path: ".symlinks/plugins/flutter_incall_manager/ios"
+  flutter_media_metadata:
+    :path: ".symlinks/plugins/flutter_media_metadata/ios"
+  flutter_secure_storage:
+    :path: ".symlinks/plugins/flutter_secure_storage/ios"
+  flutter_sim_country_code:
+    :path: ".symlinks/plugins/flutter_sim_country_code/ios"
+  flutter_webrtc:
+    :path: ".symlinks/plugins/flutter_webrtc/ios"
+  image_cropper:
+    :path: ".symlinks/plugins/image_cropper/ios"
+  image_picker_ios:
+    :path: ".symlinks/plugins/image_picker_ios/ios"
+  just_audio:
+    :path: ".symlinks/plugins/just_audio/ios"
+  path_provider_ios:
+    :path: ".symlinks/plugins/path_provider_ios/ios"
+  phone_number:
+    :path: ".symlinks/plugins/phone_number/ios"
+  record:
+    :path: ".symlinks/plugins/record/ios"
+  soundpool:
+    :path: ".symlinks/plugins/soundpool/ios"
+  sqflite:
+    :path: ".symlinks/plugins/sqflite/ios"
+
+SPEC CHECKSUMS:
+  audio_session: 4f3e461722055d21515cf3261b64c973c062f345
+  audioplayers_darwin: 877d9a4d06331c5c374595e46e16453ac7eafa40
+  connectivity_plus: 413a8857dd5d9f1c399a39130850d02fe0feaf7e
+  device_region: 896a80820f38a841066c458ac96ad821c1e259d3
+  Flutter: f04841e97a9d0b0a8025694d0796dd46242b2854
+  flutter_audio_manager: 5945fdba99ff5e6c54d7e9b78d35b3a3bd574a9b
+  flutter_contacts: edb1c5ce76aa433e20e6cb14c615f4c0b66e0983
+  flutter_incall_manager: 1a6aea8d37fb46d63aaa30ac7ea225e121704eab
+  flutter_media_metadata: 9db7298c789a54da26e0d2f6f808fa39bfd9bcd7
+  flutter_secure_storage: 7953c38a04c3fdbb00571bcd87d8e3b5ceb9daec
+  flutter_sim_country_code: 364e91e71f067cdec1dd1228eb4d1f13ab1a54e5
+  flutter_webrtc: aa130dfe1eca6625c2e2e51ce830abb495bdb06e
+  FMDB: 2ce00b547f966261cd18927a3ddb07cb6f3db82a
+  image_cropper: 60c2789d1f1a78c873235d4319ca0c34a69f2d98
+  image_picker_ios: b786a5dcf033a8336a657191401bfdf12017dabb
+  just_audio: baa7252489dbcf47a4c7cc9ca663e9661c99aafa
+  path_provider_ios: 14f3d2fd28c4fdb42f44e0f751d12861c43cee02
+  phone_number: ad6f917e4fd2e507a198b93dca5eadcb463ec8c2
+  PhoneNumberKit: 441e8b26ec88d598e3591de9061eff18f5dd12e8
+  ReachabilitySwift: 985039c6f7b23a1da463388634119492ff86c825
+  record: cae05d8dd3cdb1dea3511b20e5a5811a1ae00d0d
+  soundpool: c7f4422ca206e77f8900ed3c4ee6a6ff5a0e38a9
+  sqflite: 6d358c025f5b867b29ed92fc697fd34924e11904
+  TOCropViewController: edfd4f25713d56905ad1e0b9f5be3fbe0f59c863
+  WebRTC-SDK: e0589abeb63db07a4ca1f45c82ba0f1a72e61622
+
+PODFILE CHECKSUM: cc226341aafebf72c402ffda6ec66e76256c72fd
+
+COCOAPODS: 1.11.2

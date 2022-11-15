@@ -1,0 +1,172 @@
+import 'package:country_pickers/country.dart';
+import 'package:country_pickers/country_pickers.dart';
+import 'package:flutter_modular/flutter_modular.dart';
+import 'package:phone_number/phone_number.dart';
+import 'package:rxdart/rxdart.dart';
+import 'package:tello_social_app/modules/core/presentation/action_state.dart';
+import 'package:tello_social_app/modules/core/presentation/either_stream_binder.dart';
+import 'package:tello_social_app/modules/user/domain/entities/otp_token.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/get_sim_code.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/otp.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/session_save.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/signin.usecase.dart';
+import 'package:tello_social_app/routes/app_routes.enum.dart';
+
+class OtpBloc {
+  final _otpVerifyBind = EitherStreamBinder();
+
+  Stream<ActionState> get otpVerifyStream => _otpVerifyBind.outStream;
+
+  Stream<bool> get canSubmit =>
+      Rx.combineLatest3<String, String?, bool, bool>(phoneNumber, dialCode, busyStream, (a, b, c) => !c);
+  // final _formValidCtrl = BehaviorSubject<bool>();
+  // Stream<bool> get formIsValid => _formValidCtrl.stream;
+
+  Function(String) get changePhone => _phoneCtrl.sink.add;
+  Function(String) get changeDialCode => _dialCodeCtrl.sink.add;
+
+  Function(Country) get changeCountry => _countryCtrl.sink.add;
+
+  OtpToken? _otpToken;
+
+  final GetSimCodeUseCase getSimCodeUseCase;
+  AuthBloc(this.getSimCodeUseCase) {
+    _setBusy(true);
+    final _simCodeBind = EitherStreamBinder();
+    _simCodeBind.callUseCase<String?>(() => getSimCodeUseCase.call(null), onSuccess: (String? simCountryCode) {
+      simCountryCode ??= "IL";
+
+      try {
+        final Country c = CountryPickerUtils.getCountryByIsoCode(simCountryCode);
+        // _countryCtrl.sink.add(c);
+        final String phoneCode = c.phoneCode;
+        _dialCodeCtrl.sink.add((!phoneCode.startsWith("+") ? "+" : "") + phoneCode);
+        _simCodeBind.dispose();
+        _setBusy(false);
+      } catch (e) {
+        _setBusy(false);
+      }
+    });
+
+    /*Stream.fromFuture(FlutterSimCountryCode.simCountryCode).listen((String? countryCode) {
+      if (countryCode != null) {
+        Country c = CountryPickerUtils.getCountryByIsoCode(countryCode);
+        _countryCtrl.sink.add(c);
+        _dialCodeCtrl.sink.add(c.phoneCode);
+      }
+    });*/
+  }
+
+  /*void getCountryCode() async {
+    String platformVersion;
+    // Platform messages may fail, so we use a try/catch PlatformException.
+    try {
+      platformVersion = await FlutterSimCountryCode.simCountryCode;
+      if (mounted) {
+        _setCountryFromCode(platformVersion);
+      }
+    } on PlatformException {
+      // platformVersion = 'Failed to get platform version.';
+      //TODO log error
+    }
+  }*/
+  // void signInWithPhoneNumber(String phoneNumberInput) async {
+
+  void _setBusy(bool flag) {
+    if (!_busyCtrl.isClosed) {
+      _busyCtrl.add(flag);
+    }
+  }
+
+  void signInWithPhoneNumber() async {
+    //validate phone number
+    final String phoneNumberInput = _phoneCtrl.value;
+    final String dialCode = _dialCodeCtrl.value;
+    // _countryCtrl.value.isoCode
+    _phoneNumberVerifyBind.addLoading();
+    _setBusy(true);
+    final SigninUseCase useCase = Modular.get();
+    _phoneNumberVerifyBind.callUseCase<OtpToken>(
+        () => useCase.call(
+              SigninParams(phoneNumber: phoneNumberInput, regionCode: dialCode),
+            ), onSuccess: (OtpToken otpToken) {
+      _setBusy(false);
+      _otpToken = otpToken;
+      print("otpToken $otpToken");
+      Modular.to.pushNamed(AppRoute.otp.path);
+    });
+  }
+
+  void sendOtp(String smsCode) {
+    _phoneNumberVerifyBind.addLoading();
+
+    final OtpUseCase otpUseCase = Modular.get();
+    _otpVerifyBind.callUseCase(
+      () => otpUseCase.call(
+        VerifyParams(smsCode: smsCode, otpToken: _otpToken!),
+      ),
+      onSuccess: _onAuthenticationDone,
+    );
+  }
+
+  void _onAuthenticationDone(String? token) {
+    if (token != null) {
+      final SessionSaveUseCase useCase = Modular.get();
+      useCase.call(token);
+      Modular.to.navigate(AppRoute.home.path);
+    } else {
+      //TODO: handle error
+    }
+  }
+
+  Future<void> submit() async {
+    bool _isValidPhone = false;
+    final String phoneNumberStr = _phoneCtrl.value;
+    final String dialCodeStr = _dialCodeCtrl.value!;
+    print("fullPhoneNumber $dialCodeStr$phoneNumberStr");
+
+    String fullPhone = dialCodeStr + phoneNumberStr;
+    String fixedPhoneNumber;
+    // Platform messages may fail, so we use a try/catch PlatformException.
+    try {
+      final parsed = await PhoneNumberUtil().parse(phoneNumberStr, regionCode: _countryCtrl.value.isoCode);
+
+      _isValidPhone = true;
+      fixedPhoneNumber = parsed.e164;
+
+      /*fixedPhoneNumber = """
+      type: ${parsed['type']}
+      e164: ${parsed['e164']} 
+      international: ${parsed['international']}
+      national: ${parsed['national']}
+      """;
+
+      final formatted =
+          await PhoneNumber.format(phoneNumberStr, _countryCtrl.value.isoCode);
+      fixedPhoneNumber += """
+      parcially: ${formatted['formatted']}
+      """;*/
+      // } on PlatformException {
+    } catch (exception) {
+      // print(exception);
+      // platformVersion = 'Failed to get platform version.';
+      //TODO log error
+    }
+
+    if (_isValidPhone) {
+      //TODO backend api login
+    } else {
+      _phoneCtrl.sink.addError("invalid phone number");
+    }
+    // _formValidCtrl.sink.add(_isValidPhone);
+  }
+
+  dispose() {
+    _phoneNumberVerifyBind.dispose();
+    _otpVerifyBind.dispose();
+    _phoneCtrl.close();
+    _dialCodeCtrl.close();
+    _countryCtrl.close();
+    // _formValidCtrl?.close();
+  }
+}

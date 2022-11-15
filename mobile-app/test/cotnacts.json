@@ -1,0 +1,17 @@
+[
+    {
+        "phone_number": "+237694138335",
+        "display_name": "Contact1",
+        "phonebook_id": "1001"
+    },
+    {
+        "phone_number": "+237680087198",
+        "display_name": "Contact2",
+        "phonebook_id": "2001"
+    },
+    {
+        "phone_number": "+237694138336",
+        "display_name": "Contact3",
+        "phonebook_id": "2001"
+    },
+]

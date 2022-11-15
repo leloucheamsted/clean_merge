@@ -1,0 +1,100 @@
+import 'package:country_pickers/country.dart';
+import 'package:country_pickers/country_pickers.dart';
+import 'package:flutter_modular/flutter_modular.dart';
+import 'package:phone_number/phone_number.dart';
+import 'package:rxdart/rxdart.dart';
+import 'package:tello_social_app/modules/core/presentation/action_state.dart';
+import 'package:tello_social_app/modules/core/presentation/either_stream_binder.dart';
+import 'package:tello_social_app/modules/user/domain/entities/otp_token.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/get_sim_code.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/otp.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/session_save.usecase.dart';
+import 'package:tello_social_app/modules/user/domain/usecases/signin.usecase.dart';
+import 'package:tello_social_app/routes/app_routes.enum.dart';
+
+import 'auth_validator.dart';
+
+class PhoneInputBloc with AuthValidator {
+  final _countryCtrl = BehaviorSubject<Country>();
+
+  final _dialCodeCtrl = BehaviorSubject<String>();
+  final _phoneCtrl = BehaviorSubject<String>();
+
+  final _busyCtrl = BehaviorSubject<bool>.seeded(false);
+
+  Stream<bool> get busyStream => _busyCtrl.stream;
+
+  // final _simCodeBind = EitherStreamBinder();
+
+  final _phoneNumberVerifyBind = EitherStreamBinder();
+  Stream<ActionState> get phoneNumberVerifyStream => _phoneNumberVerifyBind.outStream;
+
+  Stream<String> get phoneNumber => _phoneCtrl.stream.transform(validatePhoneNumber);
+  // Stream<String?> get dialCode => _dialCodeCtrl.stream.transform(validateCountryCode);
+  Stream<String> get dialCode => _dialCodeCtrl.stream;
+
+  Stream<Country> get countryStream => _countryCtrl.stream;
+
+  // Stream<bool> get canSubmit => Rx.combineLatest2(phoneNumber, dialCode, (e, p) => true);
+  Stream<bool> get canSubmit =>
+      Rx.combineLatest3<String, String?, bool, bool>(phoneNumber, dialCode, busyStream, (a, b, c) => !c);
+  // final _formValidCtrl = BehaviorSubject<bool>();
+  // Stream<bool> get formIsValid => _formValidCtrl.stream;
+
+  Function(String) get changePhone => _phoneCtrl.sink.add;
+  Function(String) get changeDialCode => _dialCodeCtrl.sink.add;
+
+  Function(Country) get changeCountry => _countryCtrl.sink.add;
+
+  final GetSimCodeUseCase getSimCodeUseCase;
+  PhoneInputBloc(this.getSimCodeUseCase) {
+    _setBusy(true);
+    final _simCodeBind = EitherStreamBinder();
+    _simCodeBind.callUseCase<String?>(() => getSimCodeUseCase.call(null), onSuccess: (String? simCountryCode) {
+      simCountryCode ??= "IL";
+
+      try {
+        final Country c = CountryPickerUtils.getCountryByIsoCode(simCountryCode);
+        // _countryCtrl.sink.add(c);
+        final String phoneCode = c.phoneCode;
+        _dialCodeCtrl.sink.add((!phoneCode.startsWith("+") ? "+" : "") + phoneCode);
+        _simCodeBind.dispose();
+        _setBusy(false);
+      } catch (e) {
+        _setBusy(false);
+      }
+    });
+  }
+
+  void _setBusy(bool flag) {
+    if (!_busyCtrl.isClosed) {
+      _busyCtrl.add(flag);
+    }
+  }
+
+  void signInWithPhoneNumber() async {
+    //validate phone number
+    final String phoneNumberInput = _phoneCtrl.value;
+    final String dialCode = _dialCodeCtrl.value;
+    // _countryCtrl.value.isoCode
+    _phoneNumberVerifyBind.addLoading();
+    _setBusy(true);
+    final SigninUseCase useCase = Modular.get();
+    _phoneNumberVerifyBind.callUseCase<OtpToken>(
+        () => useCase.call(
+              SigninParams(phoneNumber: phoneNumberInput, regionCode: dialCode),
+            ), onSuccess: (OtpToken otpToken) {
+      _setBusy(false);
+      // _otpToken = otpToken;
+      print("otpToken $otpToken");
+      Modular.to.pushNamed(AppRoute.otp.path, arguments: otpToken);
+    });
+  }
+
+  dispose() {
+    _phoneNumberVerifyBind.dispose();
+    _phoneCtrl.close();
+    _dialCodeCtrl.close();
+    _countryCtrl.close();
+  }
+}

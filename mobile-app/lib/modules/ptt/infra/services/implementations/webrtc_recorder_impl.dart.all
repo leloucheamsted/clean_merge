@@ -1,0 +1,27 @@
+import 'package:flutter_webrtc/webrtc.dart';
+
+import '../interfaces/i_recorder.dart';
+
+class WebRtcRecorder implements IRecorder {
+  late final _plugin = MediaRecorder();
+  @override
+  Future<void> start(String path,
+      {AudioChannelModel? audioChannelModel,
+      String? mimeType,
+      int bitrate = 1024 * 8,
+      int samplingRate = 8000,
+      AudioEncoderModel? audioEncoderModel}) {
+    // _ALL no bitrate
+    // return _plugin.start(path, audioChannel: RecorderAudioChannel.INPUT);
+    return _plugin.start(path, audioChannel: RecorderAudioChannel.INPUT, bitRate: 8, mimeType: mimeType);
+  }
+
+  @override
+  Future stop() => _plugin.stop();
+
+  @override
+  Future<bool> isRecording() {
+    // TODO: implement isRecording
+    throw UnimplementedError();
+  }
+}
